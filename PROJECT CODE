@@ -1,0 +1,161 @@
+# Importing Datasets
+library(ranger) 
+library(caret)
+library(data.table)
+library(dplyr)
+library(corrplot) 
+library(caTools)
+creditcard_data <- read.csv("C:/users/akshay/Desktop/MACHINE LEARNING USING R/creditcard.csv")
+options(max.print=999999)
+
+# Data Exploration
+View(creditcard_data)
+dim(creditcard_data)
+head(creditcard_data)
+tail(creditcard_data,6)
+table(creditcard_data$Time)
+summary(creditcard_data$Amount)
+str(creditcard_data)
+
+#Data Visualization
+table(creditcard_data$Class)
+prop.table(table(creditcard_data$Class))
+labels <- c("Non-fraud","fraud")
+labels <- paste(labels, round(100*prop.table(table(creditcard_data$Class)), 2))
+labels <- paste0(labels,"%")
+pie(table(creditcard_data$Class), labels, col = c("yellow","black"), 
+    main = "Pie chart of fraud and legit credit card transactions")
+
+fig <- function(width, height)
+{
+  options(repr.plot.width = width, repr.plot.height = height)
+}
+fig(14, 8)
+common_theme <- theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+ggplot(creditcard_data, aes(x = factor(Class), y = Amount)) + geom_boxplot() + 
+  labs(x = 'Class', y = 'Amount') +
+  ggtitle("Distribution of transaction amount by class") + common_theme
+fig(14, 8) 
+creditcard_data %>%
+  ggplot(aes(x = Time, fill = factor(Class))) + geom_histogram(bins = 100)+
+  labs(x = 'Time in seconds since first transaction', y = 'No. of transactions') +
+  ggtitle('Distribution of time of transaction by class') +
+  facet_grid(Class ~ ., scales = 'free_y') + common_theme
+fig(14, 8)
+correlations <- cor(creditcard_data[,-c[1]],method="pearson")
+corrplot(correlations, number.cex = .9, method = "circle", type = "full", tl.cex=0.8,tl.col = "black")
+
+#App Implementation
+library(shiny)
+shinyApp(ui = ui, server = server)
+ui <- fluidPage(
+  titlePanel("Credit Card Fraud Detection"),
+  sidebarLayout(
+    sidebarPanel(
+      checkboxInput("show_fraud", "Show Fraud", TRUE),
+      checkboxInput("show_legit", "Show Legit", TRUE),
+    ),
+    mainPanel(
+      plotOutput("boxplot"),
+      plotOutput("histogram")
+    )
+  )
+)
+library(shiny)
+server <- function(input, output) {
+  filtered_data <- reactive({
+    if (input$show_fraud && input$show_legit) {
+      return(creditcard_data)
+    } else if (input$show_fraud) {
+      return(creditcard_data[creditcard_data$Class == 1,])
+    } else if (input$show_legit) {
+      return(creditcard_data[creditcard_data$Class == 0,])
+    } else {
+      return(NULL)
+    }
+  })
+  output$boxplot <- renderPlot({
+    if (is.null(filtered_data())) return(NULL)
+    ggplot(filtered_data(), aes(x = factor(Class), y = Amount)) +
+      geom_boxplot() +
+      labs(x = 'Class', y = 'Amount') +
+      ggtitle("Distribution of transaction amount by class")
+  })
+  output$histogram <- renderPlot({
+    if (is.null(filtered_data())) return(NULL)
+    ggplot(filtered_data(), aes(x = Time, fill = factor(Class))) +
+      geom_histogram(bins = 100) +
+      labs(x = 'Time in seconds since first transaction', y = 'No. of transactions') +
+      ggtitle('Distribution of time of transaction by class') +
+      facet_grid(Class ~ ., scales = 'free_y') + common_theme
+  })
+}
+
+# Data Manipulation
+creditcard_data$Amount=scale(creditcard_data$Amount)
+NewData=creditcard_data[,-c(1)]
+head(NewData)
+set.seed(123)
+data_sample = sample.split(NewData$Class,SplitRatio=0.80)
+train_data = subset(NewData,data_sample==TRUE)
+test_data = subset(NewData,data_sample==FALSE)
+View(train_data)
+dim(test_data)
+
+# Fitting Logistic Regression Model
+Logistic_Model=glm(Class~.,test_data,family=binomial())
+summary(Logistic_Model)
+plot(Logistic_Model)
+
+# ROC Curve to assess the performance of the model
+library(pROC)
+lr.predict <- predict(Logistic_Model,test_data, probability = TRUE)
+auc.gbm = roc(test_data$Class, lr.predict, plot = TRUE, col = "blue")
+
+# Fitting a Decision Tree Model
+library(rpart)
+library(rpart.plot)
+decisionTree_model <- rpart(Class ~ . , creditcard_data, method = 'class')
+predicted_val <- predict(decisionTree_model, creditcard_data, type = 'class')
+probability <- predict(decisionTree_model, creditcard_data, type = 'prob')
+rpart.plot(decisionTree_model)
+library(pROC)
+roc_obj <- roc(creditcard_data$Class, probability[,2])
+plot(roc_obj)
+auc(roc_obj)
+
+# Artificial Neural Network
+library(neuralnet)
+ANN_model =neuralnet (Class~.,train_data,linear.output=FALSE)
+plot(ANN_model)
+predANN=compute(ANN_model,test_data)
+resultANN=predANN$net.result
+resultANN=ifelse(resultANN>0.5,1,0)
+
+# Gradient Boosting (GBM)
+library(gbm, quietly=TRUE)
+# Get the time to train the GBM model
+system.time(
+  model_gbm <- gbm(Class ~ .
+                   , distribution = "bernoulli"
+                   , data = rbind(train_data, test_data)
+                   , n.trees = 500
+                   , interaction.depth = 3
+                   , n.minobsinnode = 100
+                   , shrinkage = 0.01
+                   , bag.fraction = 0.5
+                   , train.fraction = nrow(train_data) / (nrow(train_data) + nrow(test_data))
+  )
+)
+
+# Determine best iteration based on test data
+gbm.iter = gbm.perf(model_gbm, method = "test")
+model.influence = relative.influence(model_gbm, n.trees = gbm.iter, sort. = TRUE)
+#Plot the gbm model
+plot(model_gbm)
+
+# Plot and calculate AUC on test data
+library(pROC)
+gbm_test = predict(model_gbm, newdata = test_data, n.trees = gbm.iter)
+gbm_auc = roc(test_data$Class, gbm_test, plot = TRUE, col = "red")
+print(gbm_auc) 
